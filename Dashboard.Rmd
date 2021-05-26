@@ -1,0 +1,720 @@
+---
+title: "COVID-19 in Italia"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+```{r message=FALSE, warning=FALSE}
+# Librerie e Funzioni----
+library(zoo)
+library(tidyverse)
+library(plotly)
+library(dplyr)
+library(flexdashboard)
+
+# Input dataset ----
+dati_naz = read.csv("https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-andamento-nazionale/dpc-covid19-ita-andamento-nazionale.csv",header=T)
+dati_naz$data=as.Date(substr(dati_naz$data, 1, 10))
+
+dati_reg = read.csv("https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-regioni/dpc-covid19-ita-regioni.csv", header = T)
+dati_reg$data=as.Date(substr(dati_reg$data, 1, 10))
+
+dati_vac = read.csv("https://raw.githubusercontent.com/italia/covid19-opendata-vaccini/master/dati/somministrazioni-vaccini-summary-latest.csv", header = T)
+
+pop_reg = as.data.frame(matrix(c("Lombardia",	10027602, 'Nord',
+                                 "Lazio",	5755700, 'Centro',
+                                 "Campania",	5712143, 'Sud',
+                                 "Veneto",	4879133, 'Nord',
+                                 "Sicilia",	4875290, 'Isole',
+                                 "Emilia-Romagna",	4464119, 'Nord',
+                                 "Piemonte",	4311217, 'Nord',
+                                 "Puglia",	3953305, 'Sud',
+                                 "Toscana",	3692555, 'Centro',
+                                 "Calabria",	1894110, 'Sud',
+                                 "Sardegna",	1611621, 'Isole',
+                                 "Liguria",	1524826, 'Nord',
+                                 "Marche",	1512672, 'Centro',
+                                 "Abruzzo",	1293941, 'Sud',
+                                 "Friuli-Venezia Giulia",	1206216, 'Nord',
+                                 "Trentino-Alto Adige",	1078069, 'Nord',
+                                 "Umbria",	870165, 'Centro',
+                                 "Basilicata",	553254, 'Sud',
+                                 "Molise",	300516, 'Sud',
+                                 "Valle d'Aosta",	125034, 'Nord',
+                                 "Italia",59641488, 'Italia'),21,3,byrow = T))
+colnames(pop_reg) = c('nome_area','popolazione','Zona')
+pop_reg$popolazione = as.integer(pop_reg$popolazione)
+
+# Pre-Processing ----
+dati_naz=dati_naz %>%
+  mutate(decessi_giornalieri = (deceduti - lag(deceduti)),
+         nuovi_tamponi = abs(tamponi - lag(tamponi)),
+         variazione_ti = (terapia_intensiva - lag(terapia_intensiva)),
+         variazione_ricoverati = (ricoverati_con_sintomi - lag(ricoverati_con_sintomi)))
+dati_naz[1,]$decessi_giornalieri = dati_naz[1,]$deceduti
+dati_naz[1,]$nuovi_tamponi = dati_naz[1,]$tamponi
+dati_naz[1,]$variazione_ti = dati_naz[1,]$terapia_intensiva
+dati_naz[1,]$variazione_ricoverati = dati_naz[1,]$ricoverati_con_sintomi
+
+dati_naz$tasso_positivita = dati_naz$nuovi_positivi/dati_naz$nuovi_tamponi*100
+
+dati_naz=dati_naz %>%
+  mutate(media_decessi_7gg = rollmeanr(decessi_giornalieri, 7, fill = NA),
+         media_tamponi_7gg = rollmeanr(nuovi_tamponi, 7, fill = NA),
+         var_ti_7gg = rollmeanr(variazione_ti, 7, fill = NA),
+         var_ric_7gg = rollmeanr(variazione_ricoverati, 7, fill = NA),
+         media_tasso_7gg = rollmeanr(tasso_positivita, 7, fill = NA))
+dati_naz$media_decessi_7gg[1:6] = dati_naz$decessi_giornalieri[1:6]
+dati_naz$media_tamponi_7gg[1:6] = dati_naz$nuovi_tamponi[1:6]
+dati_naz$var_ti_7gg[1:6] = dati_naz$variazione_ti[1:6]
+dati_naz$var_ric_7gg[1:6] = dati_naz$variazione_ricoverati[1:6]
+dati_naz$media_tasso_7gg[1:6] = dati_naz$tasso_positivita[1:6]
+
+dati_vac$data_somministrazione = as.Date(dati_vac$data_somministrazione)
+dati_vac_naz = dati_vac %>%
+  group_by(data_somministrazione) %>%
+  summarize(totale = sum(totale),
+            prima_dose = sum(prima_dose),
+            seconda_dose = sum(seconda_dose)) %>%
+  transmute(data_somministrazione = data_somministrazione,
+            totale = cumsum(totale),
+            prima_dose = cumsum(prima_dose),
+            seconda_dose = cumsum(seconda_dose),
+            vaccxgiorno = prima_dose - lag(prima_dose))
+
+dati_vac_reg = dati_vac %>%
+  group_by(nome_area) %>%
+  summarise(tot_prima_dose = sum(prima_dose))
+
+dati_vac_reg[20,]$nome_area = "Valle d'Aosta"
+dati_vac_reg[13,]$nome_area = "Trentino-Alto Adige"
+dati_vac_reg[13,]$tot_prima_dose = sum(dati_vac_reg[13:14,]$tot_prima_dose)
+dati_vac_reg = dati_vac_reg[-14,]
+rownames(dati_vac_reg) = NULL
+dati_vac_reg = rbind(dati_vac_reg,c('Italia', dati_vac_naz$prima_dose[nrow(dati_vac_naz)]))
+dati_vac_reg$tot_prima_dose = as.integer(dati_vac_reg$tot_prima_dose)
+
+
+dati_reg_last = dati_reg%>%
+  filter(data == max(data)) %>%
+  select(denominazione_regione, terapia_intensiva)
+
+dati_reg_last[6,]$denominazione_regione = 'Friuli-Venezia Giulia'
+dati_reg_last[13,]$denominazione_regione = "Trentino-Alto Adige"
+dati_reg_last[13,]$terapia_intensiva = sum(dati_reg_last[13:14,]$terapia_intensiva)
+dati_reg_last = dati_reg_last[-12,]
+rownames(dati_reg_last) = NULL
+dati_reg_last = rbind(dati_reg_last,c('Italia', dati_naz$terapia_intensiva[nrow(dati_naz)]))
+dati_reg_last$terapia_intensiva = as.integer(dati_reg_last$terapia_intensiva)
+
+data_comp = full_join(dati_vac_reg, pop_reg,
+                      by=c("nome_area" = "nome_area")) %>%
+  mutate(perc_vac = tot_prima_dose/popolazione*100) %>%
+  arrange(perc_vac) %>%
+  full_join(dati_reg_last,
+            by=c("nome_area" = "denominazione_regione")) %>%
+  mutate(perc_ti = terapia_intensiva/popolazione*1000000,
+         nome_area=factor(nome_area,nome_area))
+
+italia = which(data_comp$nome_area == 'Italia')
+
+data_comp = data_comp %>%
+  mutate(magg_perc_vac = ifelse(nome_area == 'Italia',2,ifelse(perc_vac>perc_vac[italia],1,0)))
+
+mean_vaccxgiorno_7gg = rollmeanr(dati_vac_naz$vaccxgiorno[-length(dati_vac_naz$vaccxgiorno)], 7, fill = NA)[length(dati_vac_naz$prima_dose)-1]
+pop_to_vacc = ((data_comp %>% filter(nome_area == 'Italia'))$popolazione) - dati_vac_naz[(nrow(dati_vac_naz)-1),]$prima_dose
+g_rimanenti = (pop_to_vacc%/%mean_vaccxgiorno_7gg)+1
+last_day_vacc = format(seq(Sys.Date(), by = "day", length.out = g_rimanenti), "%d/%m/'%y")[g_rimanenti]
+
+# Data-Modeling ----
+dati_naz=dati_naz %>%
+  mutate(t = 1:n())
+
+duration<-15
+beta_vec<-NULL
+sd_vec<-NULL
+
+for (i in 3:(nrow(dati_naz)-2)){
+  fit <- glm(log(totale_positivi)~t,weights = 1/nuovi_tamponi,family="gaussian",data=dati_naz[(i-2):(i+2),])
+  beta_vec<-c(beta_vec,coef(fit)[2])
+  sd_vec<-c(sd_vec,coef(summary(fit))[2,2])
+}
+
+mean  <- 1+(beta_vec*duration)
+lower <- 1+((beta_vec-1.96*sd_vec)*duration)
+upper <- 1+((beta_vec+1.96*sd_vec)*duration)
+df <- data.frame(data = dati_naz$data[3:(nrow(dati_naz)-2)], mean, lower, upper, tamponi=dati_naz$nuovi_tamponi[-c(1,2,length(mean),length(mean)-1)])
+```
+
+# CONTAGI
+
+Column {data-width=150}
+-------------------------------------
+
+### Tamponi {.value-box}
+```{r}
+valueBox(value = paste(format(dati_naz$tamponi[nrow(dati_naz)], big.mark = "."), "", sep = " "), 
+         caption = "Tamponi Totali Processati", 
+         icon = "fas fa-dna", 
+         color = 'pink')
+```
+
+### Positivi {.value-box}
+```{r}
+valueBox(value = paste(format(dati_naz$totale_positivi[nrow(dati_naz)], big.mark = "."), "", sep = " "), 
+         caption = "Positivi Attuali",
+         icon = "fas fa-plus-circle",
+         color = '#FEE12B')
+```
+
+### Guariti {.value-box}
+```{r}
+valueBox(value = paste(format(dati_naz$dimessi_guariti[nrow(dati_naz)], big.mark = "."), sep = ""),
+         caption = "Guariti Totali", 
+         icon = "fas fa-heart", 
+         color = 'green')
+```
+
+### Tasso di Positività {.value-box}
+```{r}
+valueBox(value = paste0(round(dati_naz$tasso_positivita[nrow(dati_naz)],2), '%'),
+         caption = "Tasso di Positività", 
+         icon = "fas fa-plus-square", 
+         color = 'darkblue')
+```
+
+### Terapia Intensiva {.value-box}
+```{r}
+valueBox(value = paste(format(dati_naz$terapia_intensiva[nrow(dati_naz)], big.mark = "."), sep = ""),
+         caption = "Terapia Intensiva", 
+         icon = "fas fa-procedures", 
+         color = '#9E0003')
+```
+
+### Decessi {.value-box}
+```{r}
+valueBox(value = paste(format(dati_naz$deceduti[nrow(dati_naz)], big.mark = "."), sep = ""),
+         caption = "Decessi", 
+         icon = "fas fa-skull", 
+         color = 'grey')
+```
+
+Column {data-width=425}
+-------------------------------------
+### Tasso di Positività (nuovi positivi giornalieri\tamponi giornalieri)
+```{r}
+plot_ly(data = dati_naz,
+        x = ~ data,
+        y = ~ round(media_tasso_7gg,2),
+        name = "Tasso di Potività",
+        fillcolor = 'darkblue',
+        type = 'scatter',
+        mode = 'none',
+        stackgroup = 'one') %>%
+  layout(title = "",
+         yaxis = list(title = "Tasso di Positività"),
+         xaxis = list(title = "Media di 7 giorni"),
+         hovermode = "compared")
+```
+
+### Suddivisione Ricoverati 
+```{r}
+plot_ly(data = dati_naz,
+        x = ~ data,
+        y = ~terapia_intensiva, 
+        name = 'Terapia Intensiva', 
+        fillcolor = '#9E0003',
+        type = 'scatter',
+        mode = 'none',
+        stackgroup = 'one') %>%
+  add_trace(y = ~ricoverati_con_sintomi, 
+            name = 'Area Non Critica', 
+            fillcolor = '#FF8B3D') %>%
+  layout(title = "",
+         legend = list(x = 0, y = 1),
+         yaxis = list(title = "Numero di Casi"),
+         xaxis = list(title = ""),
+         hovermode = "compared")
+```
+
+Column {data-width=425}
+-------------------------------------
+
+### Decessi
+```{r}
+plot_ly(data = dati_naz,
+        x = ~ data,
+        y = ~ round(media_decessi_7gg,0),
+        name = "Decessi",
+        fillcolor = 'grey',
+        type = 'scatter',
+        mode = 'none',
+        stackgroup = 'one') %>%
+  layout(title = "",
+         yaxis = list(title = "Decessi"),
+         xaxis = list(title = "Media di 7 giorni"),
+         hovermode = "compared")
+```
+
+### Variazione Giornaliera Terapie Intensive
+```{r}
+plot_ly(data = dati_naz,
+        x = ~ data,
+        y = ~ round(var_ti_7gg,0),
+        name = "Variazione Terapia Intensiva",
+        fillcolor = '#9E0003',
+        type = 'scatter',
+        mode = 'none',
+        stackgroup = 'one') %>%
+  layout(title = "",
+         yaxis = list(title = "Variazione Pazienti"),
+         xaxis = list(title = "Media di 7 giorni"),
+         hovermode = "compared")
+```
+
+
+# VACCINI
+Column {data-width=150}
+-------------------------------------
+### Popolazione Italiana {.value-box}
+```{r}
+valueBox(value = paste(format(pop_reg$popolazione[which(pop_reg$nome_area == 'Italia')], big.mark = "."), sep = ""),
+         caption = "Popolazione italiana", 
+         icon = "fas fa-user-friends", 
+         color = '#8F00FF')
+```
+  
+### Dosi Totali {.value-box}
+```{r}
+valueBox(value = paste(format(dati_vac_naz$totale[nrow(dati_vac_naz)], big.mark = "."), ""), 
+         caption = "Dosi Totali", 
+         icon = "fas fa-syringe", 
+         color = 'green')
+```
+
+### Prima Dose {.value-box}
+```{r}
+valueBox(value = paste(format(paste(round(data_comp$perc_vac[italia],2),'%'), big.mark = "."), sep = ""), 
+         caption = "% Popolazione con la Prima Dose", 
+         icon = "fas fa-syringe", 
+         color = '#0063B2FF')
+```
+
+### Seconda Dose {.value-box}
+```{r}
+valueBox(value = paste(format(paste(round(dati_vac_naz$seconda_dose[nrow(dati_vac_naz)]/pop_reg$popolazione[which(pop_reg$nome_area == 'Italia')]*100,2),'%'), big.mark = "."), sep = ""),
+         caption = "% Popolazione con la Seconda Dose", 
+         icon = "fas fa-syringe", 
+         color = '#FDD835')
+```
+
+### T.I. ogni milione di residenti {.value-box}
+```{r}
+valueBox(value = paste(format(round(data_comp$perc_ti[italia],2), big.mark = "."), "", sep = " "), 
+         caption = "T.I. ogni milione di residenti", 
+         icon = "fas fa-procedures", 
+         color = '#9E0003')
+```
+
+### Termine vaccinazioni {.value-box}
+```{r}
+valueBox(value = last_day_vacc, 
+         caption = "Termine vaccinazioni", 
+         icon = "far fa-calendar-alt", 
+         color = '#FC3F94')
+```
+
+Column {data-width=425}
+-------------------------------------
+
+### Distribuzione Vaccini
+```{r}
+plot_ly(data = dati_vac_naz,
+        x = ~ data_somministrazione,
+        y = ~ prima_dose, 
+        name = "Prima Dose", 
+        fillcolor = '#0063B2FF',
+        type = 'scatter',
+        mode = 'none',
+        stackgroup = 'one') %>%
+  add_trace(y = ~seconda_dose, 
+            name = 'Seconda Dose', 
+            fillcolor = '#FDD835') %>%
+  layout(title = "",
+         legend = list(x = 0, y = 1),
+         yaxis = list(title = "Numero di Casi"),
+         xaxis = list(title = ""),
+         hovermode = "compared")
+```
+
+### Percentuale Vaccinati (tenendo conto solo della prima dose)
+```{r}
+plot_ly() %>%
+  add_bars(data = data_comp %>%
+             filter(magg_perc_vac == 0) %>% 
+             droplevels(),
+           x = ~ round(perc_vac,2),
+           y = ~ nome_area,
+           type = 'bar',
+           marker = list(color = "#9CC3D5FF"),
+           name = 'Inferiore alla Media Nazionale',
+           text = ~paste(round(perc_vac,2),'%'),
+           hoverinfo = 'text') %>%
+  add_bars(data = data_comp %>%
+             filter(magg_perc_vac == 1) %>% 
+             droplevels(),
+           x = ~ round(perc_vac,2),
+           y = ~ nome_area,
+           marker = list(color = c("#0063B2FF")),
+           name = 'Superiore alla Media Nazionale',
+           text = ~paste(round(perc_vac,2),'%'),
+           hoverinfo = 'text') %>%
+  layout(yaxis = list(title = ""),
+         xaxis = list(title = "Percentuale"),
+         legend = list(x = 0, y = 1),
+         hovermode = "compared")
+
+```
+
+Column {data-width=425}
+-------------------------------------
+### Vaccini vs Terapie Intensive (tenendo conto solo della prima dose)
+```{r}
+plot_ly(data = data_comp[-italia,],
+        x = ~perc_ti,
+        y = ~perc_vac,
+        color = ~Zona,
+        colors = "Set1",
+        type = 'scatter',
+        mode = 'markers',
+        marker = list(size = 15),
+        text = ~paste(nome_area,
+                      '<br>Terapie Intensive:', round(perc_ti,2),
+                      '<br>Vaccinati:', round(perc_vac,2)),
+        hoverinfo = 'text') %>%
+  layout(shapes = list(list(type = "line",
+                            y0 = 0, 
+                            y1 = 1, 
+                            yref = "paper",
+                            x0 = data_comp$perc_ti[italia], 
+                            x1 = data_comp$perc_ti[italia], 
+                            line = list(color = 'black',
+                                        width = 1,
+                                        dash="dot")),
+                       list(type = "line",
+                            linetype = 'dotted',
+                            y0 = data_comp$perc_vac[italia], 
+                            y1 = data_comp$perc_vac[italia], 
+                            xref = "paper",
+                            x0 = 0, 
+                            x1 = 1, 
+                            line = list(color = 'black', 
+                                        width = 1,
+                                        dash="dot"))),
+         yaxis = list(title = "Vaccinati ogni 100 residenti"),
+         xaxis = list(title = "Ricoveri in terapia intensiva ogni 1.000.000 residenti"),
+         annotations = list(list(yref = 'paper', xref = "x",
+                                 y = 0.8, x = data_comp$perc_ti[italia],
+                                 text = "media italiana"),
+                            list(yref = 'y', xref = "paper",
+                                 y = data_comp$perc_vac[italia], x = 0.8,
+                                 text = "media italiana")))
+```
+
+# INDICE Rt
+Column {data-width=150}
+-------------------------------------
+
+### Indice Rt {.value-box}
+```{r}
+valueBox(value = paste(round(df$mean[nrow(df)],2), '(', ifelse(round(df$mean[nrow(df)-1]-df$mean[nrow(df)],2)>0, '+',''),  round(df$mean[nrow(df)-1]-df$mean[nrow(df)],2), ')', sep = ''), 
+         caption = "Indice Rt (variazione rispetto a ieri)", 
+         icon = "fab fa-connectdevelop", 
+         color = 'brown')
+```
+
+Column {data-width=850}
+-------------------------------------
+
+
+### Indice Rt (IC al 95%)
+```{r}
+plot_ly(data = df) %>%
+  add_lines(x = ~data,
+            y = ~round(mean,2),
+            color = I('brown'),
+            name = 'Indice R') %>%
+  add_ribbons(x = ~data,
+              ymin = round(lower,2),
+              ymax = round(upper,2),
+              line = list(color = 'rgba(165,42,42,0.05)'),
+              fillcolor = I('brown'),
+              name = 'Errore Standard') %>%
+  layout(legend = list(x = 0.5, y = 1),
+         yaxis = list(title = "Valore R"),
+         xaxis = list(title = ""))
+
+# ,
+#          hovermode = "compared",
+#          shapes = list(type = "line",
+#               y0 = 1, 
+#               y1 = 1, 
+#               xref = "paper",
+#               x0 = 0, 
+#               x1 = 1, 
+#               line = list(color = 'black',
+#                           width = 1))
+```
+
+
+
+
+<!-- # LOMBARDIA -->
+
+<!-- Column {data-width=150} -->
+<!-- ------------------------------------- -->
+
+<!-- ### Tamponi {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(dati_naz$tamponi[nrow(dati_naz)], big.mark = "."), "", sep = " "),  -->
+<!--          caption = "Tamponi Totali Processati",  -->
+<!--          icon = "fas fa-dna",  -->
+<!--          color = 'pink') -->
+<!-- ``` -->
+
+<!-- ### Positivi {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(dati_naz$totale_positivi[nrow(dati_naz)], big.mark = "."), "", sep = " "),  -->
+<!--          caption = "Positivi Attuali", -->
+<!--          icon = "fas fa-plus-circle", -->
+<!--          color = '#FEE12B') -->
+<!-- ``` -->
+
+<!-- ### Guariti {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(dati_naz$dimessi_guariti[nrow(dati_naz)], big.mark = "."), sep = ""), -->
+<!--          caption = "Guariti Totali",  -->
+<!--          icon = "fas fa-heart",  -->
+<!--          color = 'green') -->
+<!-- ``` -->
+
+<!-- ### Tasso di Positività {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste0(round(dati_naz$tasso_positivita[nrow(dati_naz)],2), '%'), -->
+<!--          caption = "Tasso di Positività",  -->
+<!--          icon = "fas fa-plus-square",  -->
+<!--          color = 'darkblue') -->
+<!-- ``` -->
+
+<!-- ### Terapia Intensiva {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(dati_naz$terapia_intensiva[nrow(dati_naz)], big.mark = "."), sep = ""), -->
+<!--          caption = "Terapia Intensiva",  -->
+<!--          icon = "fas fa-procedures",  -->
+<!--          color = '#9E0003') -->
+<!-- ``` -->
+
+<!-- ### Decessi {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(dati_naz$deceduti[nrow(dati_naz)], big.mark = "."), sep = ""), -->
+<!--          caption = "Decessi",  -->
+<!--          icon = "fas fa-skull",  -->
+<!--          color = 'grey') -->
+<!-- ``` -->
+
+<!-- Column {data-width=425} -->
+<!-- ------------------------------------- -->
+<!-- ### Tasso di Positività -->
+<!-- ```{r} -->
+<!-- plot_ly(data = dati_naz, -->
+<!--         x = ~ data, -->
+<!--         y = ~ round(media_tasso_7gg,2), -->
+<!--         name = "Tasso di Potività", -->
+<!--         fillcolor = 'darkblue', -->
+<!--         type = 'scatter', -->
+<!--         mode = 'none', -->
+<!--         stackgroup = 'one') %>% -->
+<!--   layout(title = "", -->
+<!--          yaxis = list(title = "Tasso di Positività"), -->
+<!--          xaxis = list(title = "Media di 7 giorni"), -->
+<!--          hovermode = "compared") -->
+<!-- ``` -->
+
+<!-- ### Terapie Intensive -->
+<!-- ```{r} -->
+<!-- plot_ly(data = dati_reg %>% -->
+<!--           filter(denominazione_regione == 'Lombardia'), -->
+<!--         x = ~ data, -->
+<!--         y = ~terapia_intensiva,  -->
+<!--         name = 'Terapie Intensive',  -->
+<!--         fillcolor = '#9E0003', -->
+<!--         type = 'scatter', -->
+<!--         mode = 'none', -->
+<!--         stackgroup = 'one') %>% -->
+<!--   layout(title = "", -->
+<!--          yaxis = list(title = "Numero Pazienti"), -->
+<!--          xaxis = list(title = ""), -->
+<!--          hovermode = "compared") -->
+<!-- ``` -->
+
+<!-- Column {data-width=425} -->
+<!-- ------------------------------------- -->
+
+<!-- ### Decessi -->
+<!-- ```{r} -->
+<!-- plot_ly(data = dati_naz, -->
+<!--         x = ~ data, -->
+<!--         y = ~ round(media_decessi_7gg,0), -->
+<!--         name = "Decessi", -->
+<!--         fillcolor = 'grey', -->
+<!--         type = 'scatter', -->
+<!--         mode = 'none', -->
+<!--         stackgroup = 'one') %>% -->
+<!--   layout(title = "", -->
+<!--          yaxis = list(title = "Decessi"), -->
+<!--          xaxis = list(title = "Media di 7 giorni"), -->
+<!--          hovermode = "compared") -->
+<!-- ``` -->
+
+<!-- ### Variazione Terapie Intensive -->
+<!-- ```{r} -->
+<!-- plot_ly(data = dati_reg %>% -->
+<!--           filter(denominazione_regione == 'Lombardia'), -->
+<!--         x = ~ data, -->
+<!--         y = ~ round(rollmean(terapia_intensiva-lag(terapia_intensiva),7, fill = NA),0), -->
+<!--         name = "Variazione in Terapia Intensiva", -->
+<!--         fillcolor = '#9E0003', -->
+<!--         type = 'scatter', -->
+<!--         mode = 'none', -->
+<!--         stackgroup = 'one') %>% -->
+<!--   layout(title = "", -->
+<!--          yaxis = list(title = "Variazione Pazienti"), -->
+<!--          xaxis = list(title = "Media di 7 giorni"), -->
+<!--          hovermode = "compared") -->
+<!-- ``` -->
+
+
+<!-- # RESTRIZIONI -->
+<!-- Column {data-width=150} -->
+<!-- ------------------------------------- -->
+
+<!-- ### Dosi Totali {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(dati_vac_naz$totale[nrow(dati_vac_naz)], big.mark = "."), ""),  -->
+<!--          caption = "Dosi Totali",  -->
+<!--          icon = "fas fa-syringe",  -->
+<!--          color = 'green') -->
+<!-- ``` -->
+
+<!-- ### Popolazione Italiana {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(pop_reg$popolazione[which(pop_reg$nome_area == 'Italia')], big.mark = "."), sep = ""), -->
+<!--          caption = "Popolazione italiana",  -->
+<!--          icon = "fas fa-user-friends",  -->
+<!--          color = '#8F00FF') -->
+<!-- ``` -->
+
+<!-- ### Prima Dose {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(paste(round(data_comp$perc_vac[italia],2),'%'), big.mark = "."), sep = ""),  -->
+<!--          caption = "Prima Dose",  -->
+<!--          icon = "fas fa-syringe",  -->
+<!--          color = '#0063B2FF') -->
+<!-- ``` -->
+
+<!-- ### Seconda Dose {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(paste(round(dati_vac_naz$seconda_dose[nrow(dati_vac_naz)]/pop_reg$popolazione[which(pop_reg$nome_area == 'Italia')]*100,2),'%'), big.mark = "."), sep = ""), -->
+<!--          caption = "Seconda Dose",  -->
+<!--          icon = "fas fa-syringe",  -->
+<!--          color = '#FDD835') -->
+<!-- ``` -->
+
+<!-- ### T.I. ogni milione di residenti {.value-box} -->
+<!-- ```{r} -->
+<!-- valueBox(value = paste(format(round(data_comp$perc_ti[italia],2), big.mark = "."), "", sep = " "),  -->
+<!--          caption = "T.I. ogni milione di residenti",  -->
+<!--          icon = "fas fa-procedures",  -->
+<!--          color = '#9E0003') -->
+<!-- ``` -->
+
+<!-- Column {data-width=425} -->
+<!-- ------------------------------------- -->
+
+<!-- ### Indice Sistetico sulle Restrizioni VS Ricoveri in Terapia Intensiva -->
+<!-- ```{r} -->
+<!-- restriction <- read.csv("https://storage.googleapis.com/covid19-open-data/v2/oxford-government-response.csv") -->
+
+<!-- restriction = restriction %>% -->
+<!--   filter(key == 'IT') -->
+<!-- restriction$date = as.Date(restriction$date) -->
+
+
+<!-- plot_ly() %>%  -->
+<!--   add_bars(data = restriction %>% -->
+<!--              filter(date >= dati_naz$data[1]), -->
+<!--            x = ~date, -->
+<!--            y = ~stringency_index, -->
+<!--            name = "Indice sulle restrizioni", -->
+<!--            marker = list(color='#B5CF49')) %>% -->
+<!--   add_lines(data = dati_naz %>% -->
+<!--               filter(data <= restriction$date[nrow(restriction)]), -->
+<!--             x = ~data, -->
+<!--             y = ~terapia_intensiva, -->
+<!--             name = "Ricoveri in terapia inteniva",  -->
+<!--             yaxis = "y2", -->
+<!--             line = list(color = '#9E0003')) %>% -->
+<!--   layout(yaxis2 = list(color = 'orange', -->
+<!--                        tickfont = list(color = "orange"), -->
+<!--                        showgrid = F, -->
+<!--                        overlaying = "y", -->
+<!--                        side = "right", -->
+<!--                        title = "Numero ricoveri"), -->
+<!--          xaxis = list(title=""), -->
+<!--          yaxis = list(title = 'Indice', -->
+<!--                       showgrid = F), -->
+<!--          hovermode = 'compare') -->
+<!-- ``` -->
+
+<!-- ### CHART 1 -->
+<!-- ```{r} -->
+
+
+<!-- ``` -->
+
+<!-- Column {data-width=425} -->
+<!-- ------------------------------------- -->
+<!-- ### CHART 2 -->
+<!-- ```{r} -->
+
+<!-- ``` -->
+# NOTE
+Questa dashboard rappresenta, sotto vari aspetti, la situazione nazionale riguardo l'epidemia da SARS-CoV-2.
+
+Nasce da un desiderio di rappresentare in modo chiaro e semplice la situazione nazionale.
+
+
+Prima di leggere i dati bisogna notare diverse cose:
+
+* Il dato che più si avvicina alla realtà dei contagi è la situazione delle terapie intensive. Questo è uno degli indicatori più consistenti per l'analisi della gravità dell'epidemia in Italia.
+* L'indice Rt qui calcolato non è uguale a quello fornito dall'ISS, non sono infatti noti i dati con cui l'istituto ha effettuato tale calcolo.
+* Molte di queste serie storiche hanno una stagionalità settimanale. Per facilitare la lettura dei grafici la stima puntuale è stata rimpiazzata da una media di 7 giorni.
+* Il termine delle vaccinazioni è calcolato considerando solo la prima dose. La data è stata trovata proiettando la media degli ultimi 7 giorni e considerando che dal giorno seguente fino al termine le vaccinazioni giornaliere siano costanti
+
+**Fonti**
+
+* Per i dati sui contagi: [Protezione Civile](https://github.com/pcm-dpc/COVID-19)
+* Per i dati sui vaccini: [Commissario straordinario per l'emergenza Covid-19 - Presidenza del Consiglio dei Ministri](https://github.com/italia/covid19-opendata-vaccini)
+* Per i dati sulla popolazione: [ISTAT](https://www.istat.it/) aggiornati al 31/12/'19
+<!-- * Per i dati sulle restrizioni: [Coronavirus Government Response Tracker - OXFORD](https://www.bsg.ox.ac.uk/research/research-projects/coronavirus-government-response-tracker#data) -->
+
+**Autore**
+
+Francesco Fustini ([Profilo LinkedIn](https://www.linkedin.com/in/francesco-fustini-3158b115a/))
+
+Studente della magistrale di Data Science dell'università Milano-Bicocca, dottore in Scienze Statistiche ed Economiche.
+
+*Ultimo aggiornamento: `r format(Sys.time(), "%A %d %B %Y")` ore `r format(Sys.time(), "%H:%M")`*
+
+*Versione 1.0*
